@@ -1,4 +1,6 @@
 
+[![Go Reference](https://pkg.go.dev/badge/goflare.io/ember?status.svg)](https://pkg.go.dev/goflare.io/ember?tab-doc)
+
 # Ember
 
 <img src="./image.jpg" alt="Header" width="200" /> 
