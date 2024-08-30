@@ -154,7 +154,7 @@ func (c *MultiCache) Set(ctx context.Context, key string, value any, ttl ...time
 	ctx, span := c.tracer.Start(ctx, "MultiLevelCache.Set", trace.WithAttributes(attribute.String("key", key)))
 	defer span.End()
 
-	_, err, _ := c.sf.Do(key, func() (interface{}, error) {
+	_, err, _ := c.sf.Do(key, func() (any, error) {
 		var buf bytes.Buffer
 		if err := c.config.Serialization.Encoder(&buf).Encode(value); err != nil {
 			return nil, fmt.Errorf("failed to encode value: %w", err)
@@ -191,7 +191,7 @@ func (c *MultiCache) Delete(ctx context.Context, key string) error {
 	ctx, span := c.tracer.Start(ctx, "MultiLevelCache.Delete", trace.WithAttributes(attribute.String("key", key)))
 	defer span.End()
 
-	_, err, _ := c.sf.Do(key, func() (interface{}, error) {
+	_, err, _ := c.sf.Do(key, func() (any, error) {
 		if c.config.EnableLocalCache {
 			shardIndex := utils.ShardIndex(uint64(len(c.shards)), key)
 			c.shards[shardIndex].Lock()
