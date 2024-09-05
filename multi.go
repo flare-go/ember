@@ -92,7 +92,7 @@ func NewMultiCache(
 
 	go mlc.periodicRebuild(ctx)
 	go mlc.adaptiveTTLRoutine()
-	go mlc.prefetchRoutine(ctx)
+	//go mlc.prefetchRoutine(ctx)
 
 	if mlcConfig.CacheBehaviorConfig.EnablePrefetch {
 		mlc.warmCache(ctx, mlcConfig.CacheBehaviorConfig.WarmupKeys)
