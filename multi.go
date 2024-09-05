@@ -154,14 +154,27 @@ func (c *MultiCache) Set(ctx context.Context, key string, value any, ttl ...time
 	ctx, span := c.tracer.Start(ctx, "MultiLevelCache.Set", trace.WithAttributes(attribute.String("key", key)))
 	defer span.End()
 
-	_, err, _ := c.sf.Do(key, func() (any, error) {
+	_, err, _ := c.sf.Do(key, func() (interface{}, error) {
+		defer func() {
+			if r := recover(); r != nil {
+				c.config.Logger.Error("Panic in Set operation",
+					zap.String("key", key),
+					zap.Any("panic", r),
+					zap.Stack("stack"))
+				// 不要在這裡重新拋出 panic，讓 singleflight 處理它
+			}
+		}()
+
 		var buf bytes.Buffer
 		if err := c.config.Serialization.Encoder(&buf).Encode(value); err != nil {
 			return nil, fmt.Errorf("failed to encode value: %w", err)
 		}
 
 		data := buf.Bytes()
-		expirationTime := utils.GetExpirationTime(c.getAdaptiveTTL(key), ttl...)
+		expirationTime := c.getAdaptiveTTL(key)
+		if len(ttl) > 0 {
+			expirationTime = ttl[0]
+		}
 
 		if err := c.executeWithResilience(ctx, func() error {
 			return c.remoteCache.Set(ctx, key, data, expirationTime).Err()
@@ -175,16 +188,24 @@ func (c *MultiCache) Set(ctx context.Context, key string, value any, ttl ...time
 			defer c.shards[shardIndex].Unlock()
 			if err := c.localCaches[shardIndex].Set(ctx, key, data, expirationTime); err != nil {
 				c.config.Logger.Warn("Failed to set local cache", zap.Error(err), zap.String("key", key))
+				// 注意：這裡我們只是記錄警告，而不是返回錯誤
 			}
 		}
 
 		c.filter.Add([]byte(key))
 		go c.saveBloomFilter(ctx)
 
-		return nil, nil
+		return data, nil // 返回設置的數據，而不是 nil
 	})
 
-	return err
+	if err != nil {
+		c.config.Logger.Error("Error in Set operation",
+			zap.String("key", key),
+			zap.Error(err))
+		return err
+	}
+
+	return nil
 }
 
 func (c *MultiCache) Delete(ctx context.Context, key string) error {
