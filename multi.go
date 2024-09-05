@@ -151,59 +151,81 @@ func (c *MultiCache) Get(ctx context.Context, key string, value any) (bool, erro
 }
 
 func (c *MultiCache) Set(ctx context.Context, key string, value any, ttl ...time.Duration) error {
+	if key == "" {
+		return fmt.Errorf("key cannot be empty")
+	}
+
 	ctx, span := c.tracer.Start(ctx, "MultiLevelCache.Set", trace.WithAttributes(attribute.String("key", key)))
 	defer span.End()
 
-	_, err, _ := c.sf.Do(key, func() (interface{}, error) {
+	c.config.Logger.Debug("Starting Set operation", zap.String("key", key))
+
+	result, err, shared := c.sf.Do(key, func() (any, error) {
 		defer func() {
 			if r := recover(); r != nil {
 				c.config.Logger.Error("Panic in Set operation",
 					zap.String("key", key),
 					zap.Any("panic", r),
 					zap.Stack("stack"))
-				// 不要在這裡重新拋出 panic，讓 singleflight 處理它
 			}
 		}()
 
 		var buf bytes.Buffer
 		if err := c.config.Serialization.Encoder(&buf).Encode(value); err != nil {
+			c.config.Logger.Error("Failed to encode value", zap.Error(err), zap.String("key", key))
 			return nil, fmt.Errorf("failed to encode value: %w", err)
 		}
 
 		data := buf.Bytes()
 		expirationTime := c.getAdaptiveTTL(key)
-		if len(ttl) > 0 {
+		if len(ttl) > 0 && ttl[0] > 0 {
 			expirationTime = ttl[0]
 		}
+		c.config.Logger.Debug("Calculated expiration time", zap.Duration("ttl", expirationTime), zap.String("key", key))
 
 		if err := c.executeWithResilience(ctx, func() error {
 			return c.remoteCache.Set(ctx, key, data, expirationTime).Err()
 		}); err != nil {
+			c.config.Logger.Error("Failed to set in remote cache", zap.Error(err), zap.String("key", key))
 			return nil, fmt.Errorf("redis set failed: %w", err)
 		}
+		c.config.Logger.Info("Successfully set in remote cache", zap.String("key", key))
 
 		if c.config.EnableLocalCache {
 			shardIndex := utils.ShardIndex(uint64(len(c.shards)), key)
 			c.shards[shardIndex].Lock()
 			defer c.shards[shardIndex].Unlock()
 			if err := c.localCaches[shardIndex].Set(ctx, key, data, expirationTime); err != nil {
-				c.config.Logger.Warn("Failed to set local cache", zap.Error(err), zap.String("key", key))
-				// 注意：這裡我們只是記錄警告，而不是返回錯誤
+				c.config.Logger.Warn("Failed to set in local cache", zap.Error(err), zap.String("key", key))
+			} else {
+				c.config.Logger.Debug("Successfully set in local cache", zap.String("key", key))
 			}
 		}
 
 		c.filter.Add([]byte(key))
-		go c.saveBloomFilter(ctx)
+		go func() {
+			c.saveBloomFilter(context.Background())
+		}()
 
-		return data, nil // 返回設置的數據，而不是 nil
+		c.incrementAccessCount(key)
+
+		return data, nil
 	})
 
 	if err != nil {
-		c.config.Logger.Error("Error in Set operation",
-			zap.String("key", key),
-			zap.Error(err))
-		return err
+		c.config.Logger.Error("Error in Set operation", zap.String("key", key), zap.Error(err))
+		return fmt.Errorf("set operation failed: %w", err)
 	}
+
+	if result == nil {
+		c.config.Logger.Error("Set operation returned nil result", zap.String("key", key))
+		return fmt.Errorf("set operation failed: nil result")
+	}
+
+	c.config.Logger.Info("Set operation completed successfully",
+		zap.String("key", key),
+		zap.Bool("shared", shared),
+		zap.Int("dataSize", len(result.([]byte))))
 
 	return nil
 }
