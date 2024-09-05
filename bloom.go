@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"github.com/bits-and-blooms/bloom/v3"
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"time"
 )
@@ -47,10 +45,8 @@ func (c *MultiCache) loadBloomFilter(ctx context.Context) error {
 		encoded, err = c.remoteCache.Get(ctx, c.config.CacheBehaviorConfig.BloomFilterSettings.BloomFilterRedisKey).Result()
 		return err
 	}); err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil // No existing Bloom filter, which is okay
-		}
-		return fmt.Errorf("failed to load bloom filter from Redis: %w", err)
+		c.saveBloomFilter(ctx)
+		return nil
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
