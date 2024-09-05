@@ -3,7 +3,6 @@ package ember
 import (
 	"go.uber.org/zap"
 	"goflare.io/ember/models"
-	"math"
 	"time"
 )
 
@@ -51,11 +50,34 @@ func (c *MultiCache) getAdaptiveTTL(key string) time.Duration {
 		return c.config.DefaultExpiration
 	}
 
-	accessCount, _ := c.accessCount.Load(key)
-	count := accessCount.(int)
+	count, ok := c.accessCount.Load(key)
+	if !ok || count == nil {
+		c.config.Logger.Debug("No access count for key, using default expiration", zap.String("key", key))
+		return c.config.DefaultExpiration
+	}
 
-	factor := math.Min(float64(count)/100, 1.0)
-	ttl := c.config.CacheBehaviorConfig.AdaptiveTTLSettings.MinTTL + time.Duration(factor*float64(c.config.CacheBehaviorConfig.AdaptiveTTLSettings.MaxTTL-c.config.CacheBehaviorConfig.AdaptiveTTLSettings.MinTTL))
+	accessCount, ok := count.(int64)
+	if !ok {
+		c.config.Logger.Warn("Invalid access count type", zap.String("key", key), zap.Any("count", count))
+		return c.config.DefaultExpiration
+	}
 
+	// 計算自適應 TTL
+	ttl := c.calculateAdaptiveTTL(accessCount)
+	c.config.Logger.Debug("Calculated adaptive TTL", zap.String("key", key), zap.Duration("ttl", ttl))
+	return ttl
+}
+
+func (c *MultiCache) calculateAdaptiveTTL(accessCount int64) time.Duration {
+	minTTL := c.config.CacheBehaviorConfig.AdaptiveTTLSettings.MinTTL
+	maxTTL := c.config.CacheBehaviorConfig.AdaptiveTTLSettings.MaxTTL
+
+	// 這裡使用一個簡單的線性計算，您可以根據需求調整這個邏輯
+	factor := float64(accessCount) / 100.0 // 假設100次訪問達到最大TTL
+	if factor > 1.0 {
+		factor = 1.0
+	}
+
+	ttl := minTTL + time.Duration(float64(maxTTL-minTTL)*factor)
 	return ttl
 }
