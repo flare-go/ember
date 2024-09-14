@@ -3,6 +3,7 @@ package serialization
 const (
 	JsonType = "json"
 	GobType  = "gob"
+	// 其他類型
 )
 
 type Decoder interface {
