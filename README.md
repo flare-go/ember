@@ -97,6 +97,11 @@ import (
     "github.com/redis/go-redis/v9"
 )
 
+type User struct {
+   ID   int    `json:"id"`
+   Name string `json:"name"`
+}
+
 func main() {
     ctx := context.Background()
 
@@ -113,29 +118,20 @@ func main() {
     defer cache.Close()
 
     // 設置緩存
-    err = cache.Set(ctx, "user:1001", User{ID: 1001, Name: "Alice"}, 10*time.Minute)
-    if err != nil {
-        fmt.Printf("Failed to set cache: %v
-", err)
+    if err = cache.Set(ctx, "user:1001", User{ID: 1001, Name: "Alice"}, 10*time.Minute);err != nil {
+        fmt.Printf("Failed to set cache: %v", err)
     }
 
     // 獲取緩存
     var user User
     found, err := cache.Get(ctx, "user:1001", &user)
     if err != nil {
-        fmt.Printf("Failed to get cache: %v
-", err)
+        fmt.Printf("Failed to get cache: %v", err)
     } else if found {
-        fmt.Printf("Found user: %+v
-", user)
+        fmt.Printf("Found user: %+v", user)
     } else {
         fmt.Println("User not found")
     }
-}
-
-type User struct {
-    ID   int    `json:"id"`
-    Name string `json:"name"`
 }
 ```
 
