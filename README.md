@@ -93,7 +93,7 @@ import (
     "fmt"
     "time"
 
-    "github.com/your-org/ember"
+    "goflare.io/ember"
     "github.com/redis/go-redis/v9"
 )
 
