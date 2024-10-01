@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"goflare.io/ember/internal/models"
 	"math"
 	"time"
+
+	"goflare.io/ember/internal/models"
 
 	"github.com/dgraph-io/ristretto"
 	"go.uber.org/zap"
@@ -25,7 +26,7 @@ type Store interface {
 
 // RistrettoStore implements the Store interface using Ristretto.
 type RistrettoStore struct {
-	cache      *ristretto.Cache
+	cache      *ristretto.Cache[string, any]
 	logger     *zap.Logger
 	defaultTTL time.Duration
 }
@@ -35,13 +36,9 @@ func NewRistrettoStore(maxSize uint64, defaultTTL time.Duration, logger *zap.Log
 	numCounters := int64(math.Min(float64(10*maxSize), float64(math.MaxInt64)))
 	maxCost := int64(math.Min(float64(maxSize), float64(math.MaxInt64)))
 
-	c, err := ristretto.NewCache(&ristretto.Config{
+	c, err := ristretto.NewCache(&ristretto.Config[string, any]{
 		NumCounters: numCounters,
 		MaxCost:     maxCost,
-		BufferItems: 64,
-		OnEvict: func(item *ristretto.Item) {
-			// Eviction logic can be added here if needed
-		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Ristretto cache: %w", err)
