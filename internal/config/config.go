@@ -2,7 +2,9 @@ package config
 
 import (
 	"errors"
+	"github.com/redis/go-redis/v9"
 	"io"
+	"math"
 	"runtime"
 	"time"
 
@@ -11,7 +13,7 @@ import (
 	"goflare.io/ember/pkg/serialization"
 )
 
-// Config 用於 MultiLevelCache 的配置
+// Config 包含缓存系统的配置选项
 type Config struct {
 	EnableLocalCache  bool
 	MaxLocalSize      uint64
@@ -22,28 +24,36 @@ type Config struct {
 	CacheBehaviorConfig CacheBehaviorConfig
 	ResilienceConfig    ResilienceConfig
 	Serialization       SerializationConfig
+	RedisOptions        *redis.Options
 	Logger              *zap.Logger
 }
 
-// CacheBehaviorConfig 緩存相關配置
+// CacheBehaviorConfig encapsulates configuration settings specific to cache behavior,
+// including prefetching and TTL management.
 type CacheBehaviorConfig struct {
 	EnablePrefetch      bool
 	PrefetchThreshold   uint64
 	PrefetchCount       uint64
+	PrefetchInterval    time.Duration
 	WarmupKeys          []string
 	EnableAdaptiveTTL   bool
 	AdaptiveTTLSettings AdaptiveTTLConfig
 	BloomFilterSettings BloomFilterConfig
 }
 
-// ResilienceConfig 用於設置重試和熔斷器
+// ResilienceConfig configures resilience mechanisms like circuit breakers and retry backoff.
 type ResilienceConfig struct {
 	GlobalCircuitBreaker gobreaker.Settings
 	KeyCircuitBreaker    gobreaker.Settings
 	RetrierBackoff       []time.Duration
+	MaxRetries           int
+	InitialInterval      time.Duration
+	MaxInterval          time.Duration
+	Multiplier           float64
+	RandomizationFactor  float64
 }
 
-// BloomFilterConfig 用於布隆過濾器的配置
+// BloomFilterConfig represents the configuration for a bloom filter.
 type BloomFilterConfig struct {
 	ExpectedItems       uint
 	FalsePositiveRate   float64
@@ -51,28 +61,31 @@ type BloomFilterConfig struct {
 	BloomFilterRedisKey string
 }
 
-// AdaptiveTTLConfig 自適應 TTL 配置
+// AdaptiveTTLConfig defines a configuration for adaptive TTL (Time-To-Live) adjustments for cached items.
+// It includes parameters for minimum and maximum TTL durations and the interval at which the TTL is adjusted.
 type AdaptiveTTLConfig struct {
 	MinTTL            time.Duration
 	MaxTTL            time.Duration
 	TTLAdjustInterval time.Duration
 }
 
-// SerializationConfig 序列化相關配置
+// SerializationConfig holds the configuration for serialization,
+// including the type, encoder function, and decoder function.
 type SerializationConfig struct {
 	Type    string
 	Encoder func(io.Writer) serialization.Encoder
 	Decoder func(io.Reader) serialization.Decoder
 }
 
-// Option 函數類型
+// Option is a function type that takes a pointer to Config and returns an error. It is used for configuring instances.
 type Option func(*Config) error
 
+// ErrShardCountZero indicates an error condition where the shard count is zero, which is not allowed.
 var (
 	ErrShardCountZero = errors.New("shard count must be at least 1")
 )
 
-// NewConfig 創建一個默認的 Config，允許覆蓋特定參數
+// NewConfig initializes a new Config object with default values and applies optional configuration options.
 func NewConfig(options ...Option) (*Config, error) {
 	defaultLogger, err := zap.NewProduction()
 	if err != nil {
@@ -108,7 +121,9 @@ func NewConfig(options ...Option) (*Config, error) {
 				RebuildInterval:     1 * time.Hour,
 				BloomFilterRedisKey: "bloom_filter_key",
 			},
+			PrefetchInterval: 5 * time.Minute,
 		},
+		RedisOptions: nil,
 		ResilienceConfig: ResilienceConfig{
 			GlobalCircuitBreaker: gobreaker.Settings{
 				Name:        "GlobalCircuitBreaker",
@@ -133,11 +148,16 @@ func NewConfig(options ...Option) (*Config, error) {
 				200 * time.Millisecond,
 				400 * time.Millisecond,
 			},
+			MaxRetries:          3,
+			InitialInterval:     100 * time.Millisecond,
+			MaxInterval:         10 * time.Second,
+			Multiplier:          2.0,
+			RandomizationFactor: 0.5,
 		},
 		Serialization: SerializationConfig{
-			Type:    serialization.JsonType,
-			Encoder: serialization.JsonEncoder,
-			Decoder: serialization.JsonDecoder,
+			Type:    serialization.JSONType,
+			Encoder: serialization.JSONEncoder,
+			Decoder: serialization.JSONDecoder,
 		},
 		Logger: defaultLogger,
 	}
@@ -159,7 +179,8 @@ func NewConfig(options ...Option) (*Config, error) {
 
 // Option 函數示例
 
-// WithLogger 設置自定義 Logger
+// WithLogger sets the logger instance for the configuration.
+// If the provided logger is non-nil, it assigns it to the Logger field in the Config structure.
 func WithLogger(logger *zap.Logger) Option {
 	return func(c *Config) error {
 		if logger != nil {
@@ -169,7 +190,8 @@ func WithLogger(logger *zap.Logger) Option {
 	}
 }
 
-// WithMaxLocalSize 設置本地快取的最大大小
+// WithMaxLocalSize sets the maximum size for the local cache,
+// dynamically calculates shard count, and returns an Option.
 func WithMaxLocalSize(size uint64) Option {
 	return func(c *Config) error {
 		if size == 0 {
@@ -184,7 +206,7 @@ func WithMaxLocalSize(size uint64) Option {
 	}
 }
 
-// WithShardCount 設置分片數量
+// WithShardCount sets the number of shards for the cache and returns an Option. It requires a count greater than 0.
 func WithShardCount(count uint64) Option {
 	return func(c *Config) error {
 		if count == 0 {
@@ -195,7 +217,23 @@ func WithShardCount(count uint64) Option {
 	}
 }
 
-// CalculateDynamicShardCount 計算動態分片數量
+// WithResilienceConfig sets the ResilienceConfig in the Config struct and returns an Option.
+func WithResilienceConfig(rc ResilienceConfig) Option {
+	return func(c *Config) error {
+		c.ResilienceConfig = rc
+		return nil
+	}
+}
+
+// WithPrefetchInterval sets the prefetch interval for the cache, controlling how often prefetching should occur.
+func WithPrefetchInterval(interval time.Duration) Option {
+	return func(c *Config) error {
+		c.CacheBehaviorConfig.PrefetchInterval = interval
+		return nil
+	}
+}
+
+// CalculateDynamicShardCount dynamically calculates the number of shards needed based on maxSize and avgItemSize.
 func CalculateDynamicShardCount(maxSize, avgItemSize uint64) uint64 {
 	if avgItemSize == 0 {
 		avgItemSize = 1024 // 默認假設每個緩存項的平均大小為1KB
@@ -210,8 +248,9 @@ func CalculateDynamicShardCount(maxSize, avgItemSize uint64) uint64 {
 	}
 
 	// 限制分片數量不超過 CPU 核心數的 4 倍
-	if shards > uint64(cpuCores*4) {
-		shards = uint64(cpuCores * 4)
+	maxShards := uint64(math.Min(float64(cpuCores*4), float64(math.MaxUint64)))
+	if shards > maxShards {
+		shards = maxShards
 	}
 
 	return shards

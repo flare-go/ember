@@ -5,35 +5,42 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
 
-// Temporary interface defines a method to indicate if an error is temporary.
-type Temporary interface {
-	Temporary() bool
-}
+const (
+	minMaxAttempts = 1
+	minBaseDelay   = time.Millisecond
+	minFactor      = 1.0
+	maxJitter      = 1.0
+)
 
-// IsTemporary checks if the error is temporary.
-func IsTemporary(err error) bool {
-	var temp Temporary
-	if errors.As(err, &temp) {
-		return temp.Temporary()
-	}
-	return false
-}
-
-// BackoffStrategy defines the type for backoff strategies.
-type BackoffStrategy int
-
+// ExponentialBackoff represents a backoff strategy where intervals exponentially increase.
+// LinearBackoff represents a backoff strategy where intervals increase linearly.
+// FibonacciBackoff represents a backoff strategy where intervals increase based on the Fibonacci sequence.
 const (
 	ExponentialBackoff BackoffStrategy = iota
 	LinearBackoff
 	FibonacciBackoff
 )
 
-// Retrier implements a retry mechanism with backoff strategies.
+var (
+	// ErrInvalidMaxAttempts is returned when the max attempts parameter is invalid.
+	ErrInvalidMaxAttempts = errors.New("max attempts must be at least 1")
+	// ErrInvalidBaseDelay is returned when the base delay parameter is invalid.
+	ErrInvalidBaseDelay = errors.New("base delay must be at least 1ms")
+	// ErrInvalidFactor is returned when the factor parameter is invalid.
+	ErrInvalidFactor = errors.New("factor must be at least 1.0")
+	// ErrInvalidJitter is returned when the jitter parameter is invalid.
+	ErrInvalidJitter = errors.New("jitter must be between 0 and 1")
+)
+
+// BackoffStrategy defines the strategy used for calculating backoff intervals in retry mechanisms.
+type BackoffStrategy int
+
+// Retrier provides functionality to execute a function with retry logic based on different backoff strategies.
 type Retrier struct {
 	maxAttempts    int
 	baseDelay      time.Duration
@@ -46,25 +53,51 @@ type Retrier struct {
 	TempErrorFunc  func(error) bool // Custom temporary error function
 }
 
-// NewRetrier creates a new Retrier instance.
-func NewRetrier(maxAttempts int, baseDelay, maxDelay time.Duration, factor, jitter float64, strategy BackoffStrategy, tempErrorFunc func(error) bool) *Retrier {
+type cryptoSource struct{}
+
+// NewRetrier creates a new Retrier instance with specified parameters for handling retry logic.
+// Parameters:
+// - maxAttempts: maximum number of retry attempts.
+// - baseDelay: basic delay duration between retries.
+// - maxDelay: maximum allowed delay duration between retries.
+// - factor: multiplier for exponential backoff calculation.
+// - jitter: randomness factor to avoid retry storms.
+// - strategy: backoff strategy to use (e.g., ExponentialBackoff, LinearBackoff, FibonacciBackoff).
+// - tempErrorFunc: optional function to determine if an error is temporary.
+func NewRetrier(maxAttempts int, baseDelay, maxDelay time.Duration, factor, jitter float64, strategy BackoffStrategy, tempErrorFunc func(error) bool) (*Retrier, error) {
+	if maxAttempts < minMaxAttempts {
+		return nil, ErrInvalidMaxAttempts
+	}
+	if baseDelay < minBaseDelay {
+		return nil, ErrInvalidBaseDelay
+	}
+	if factor < minFactor {
+		return nil, ErrInvalidFactor
+	}
+	if jitter < 0 || jitter > maxJitter {
+		return nil, ErrInvalidJitter
+	}
+
 	return &Retrier{
-		maxAttempts:    maxAttempts,
-		baseDelay:      baseDelay,
-		maxDelay:       maxDelay,
-		factor:         factor,
-		jitter:         jitter,
-		randPool:       &sync.Pool{New: func() any { return rand.New(rand.NewSource(time.Now().UnixNano())) }},
+		maxAttempts: maxAttempts,
+		baseDelay:   baseDelay,
+		maxDelay:    maxDelay,
+		factor:      factor,
+		jitter:      jitter,
+		randPool: &sync.Pool{
+			New: func() any {
+				return &cryptoSource{}
+			},
+		},
 		strategy:       strategy,
 		fibonacciCache: []time.Duration{0, baseDelay},
 		TempErrorFunc:  tempErrorFunc,
-	}
+	}, nil
 }
 
-// Run executes the given function with retry logic.
+// Run executes the provided function with retries according to the Retriever's configuration.
 func (r *Retrier) Run(ctx context.Context, fn func() error) error {
 	var err error
-	var errs []error
 	for attempt := 0; attempt < r.maxAttempts; attempt++ {
 		err = fn()
 		if err == nil {
@@ -82,8 +115,6 @@ func (r *Retrier) Run(ctx context.Context, fn func() error) error {
 			// Non-temporary error, do not retry
 			return err
 		}
-
-		errs = append(errs, err)
 
 		if attempt == r.maxAttempts-1 {
 			break
@@ -103,7 +134,7 @@ func (r *Retrier) Run(ctx context.Context, fn func() error) error {
 	return fmt.Errorf("max retry attempts reached: %w", err)
 }
 
-// calculateDelay calculates the delay based on the backoff strategy.
+// calculateDelay computes the delay duration based on the retry attempt and backoff strategy.
 func (r *Retrier) calculateDelay(attempt int) time.Duration {
 	var delay float64
 
@@ -136,7 +167,7 @@ func (r *Retrier) calculateDelay(attempt int) time.Duration {
 	return time.Duration(delay)
 }
 
-// getFibonacciDelay returns the Fibonacci delay for the given attempt.
+// getFibonacciDelay returns the delay for the given attempt using the Fibonacci sequence.
 func (r *Retrier) getFibonacciDelay(attempt int) time.Duration {
 	if attempt < len(r.fibonacciCache) {
 		return r.fibonacciCache[attempt]

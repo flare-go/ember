@@ -1,3 +1,4 @@
+// Package ember provides a flexible, multi-layer caching solution.
 package ember
 
 import (
@@ -7,87 +8,48 @@ import (
 
 	"go.uber.org/zap"
 
-	"goflare.io/ember/internal/cache/multi_cache"
+	"goflare.io/ember/internal/cache/limited"
+	"goflare.io/ember/internal/cache/multi"
 	"goflare.io/ember/internal/config"
 	"goflare.io/ember/pkg/serialization"
 
 	"github.com/redis/go-redis/v9"
 )
 
-// Option 定義初始化 Ember 的選項接口
+// CacheOperations defines the interface for cache operations.
+type CacheOperations interface {
+	Set(ctx context.Context, key string, value any, ttl ...time.Duration) error
+	Get(ctx context.Context, key string, value any) (bool, error)
+	Delete(ctx context.Context, key string) error
+	Clear(ctx context.Context) error
+	GetMulti(ctx context.Context, keys []string) (map[string]any, error)
+	SetMulti(ctx context.Context, items map[string]any, ttl ...time.Duration) error
+	Close() error
+}
+
+// Option defines a function type for configuring Ember.
 type Option func(*config.Config) error
 
-// WithLogger 設置自定義的日誌記錄器
-func WithLogger(logger *zap.Logger) Option {
-	return func(cfg *config.Config) error {
-		cfg.Logger = logger
-		return nil
-	}
-}
-
-// WithMaxLocalSize 設置本地快取的最大大小（字節）
-func WithMaxLocalSize(maxSize uint64) Option {
-	return func(cfg *config.Config) error {
-		cfg.MaxLocalSize = maxSize
-		return nil
-	}
-}
-
-// WithShardCount 設置分片數量
-func WithShardCount(shardCount uint64) Option {
-	return func(cfg *config.Config) error {
-		cfg.ShardCount = shardCount
-		return nil
-	}
-}
-
-// WithDefaultExpiration 設置默認的過期時間
-func WithDefaultExpiration(ttl time.Duration) Option {
-	return func(cfg *config.Config) error {
-		cfg.DefaultExpiration = ttl
-		return nil
-	}
-}
-
-// WithSerialization 設置序列化方式
-func WithSerialization(serializer string) Option {
-	return func(cfg *config.Config) error {
-		switch serializer {
-		case "json":
-			cfg.Serialization.Encoder = serialization.JsonEncoder
-			cfg.Serialization.Decoder = serialization.JsonDecoder
-		case "gob":
-			cfg.Serialization.Encoder = serialization.GobEncoder
-			cfg.Serialization.Decoder = serialization.GobDecoder
-		default:
-			return fmt.Errorf("unsupported serialization type: %s", serializer)
-		}
-		return nil
-	}
-}
-
-// Ember 定義 Ember 庫的主要結構體
+// Ember represents the main structure of the Ember library.
 type Ember struct {
-	multiCache multi_cache.CacheOperations
-	logger     *zap.Logger
+	cache  CacheOperations
+	logger *zap.Logger
+	config *config.Config
 }
 
-// New 初始化 Ember 庫，接受多個配置選項
-func New(ctx context.Context, redisOptions *redis.Options, opts ...Option) (*Ember, error) {
-	// 初始化默認配置
+// New initializes the Ember library with the provided options.
+func New(ctx context.Context, opts ...Option) (*Ember, error) {
 	cfg, err := config.NewConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create config: %w", err)
 	}
 
-	// 應用選項
 	for _, opt := range opts {
 		if err := opt(cfg); err != nil {
 			return nil, fmt.Errorf("failed to apply option: %w", err)
 		}
 	}
 
-	// 初始化 Logger，如果未設置則使用默認
 	if cfg.Logger == nil {
 		logger, err := zap.NewProduction()
 		if err != nil {
@@ -96,55 +58,164 @@ func New(ctx context.Context, redisOptions *redis.Options, opts ...Option) (*Emb
 		cfg.Logger = logger
 	}
 
-	// 初始化 Redis 客戶端
-	redisClient := redis.NewClient(redisOptions)
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+	var cache CacheOperations
+	if cfg.RedisOptions != nil {
+		redisClient := redis.NewClient(cfg.RedisOptions)
+		if err := redisClient.Ping(ctx).Err(); err != nil {
+			return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+		}
+		cache, err = multi.NewCache(ctx, cfg, redisClient)
+	} else {
+		cache, err = limited.New(cfg.MaxLocalSize, cfg.DefaultExpiration, cfg.Logger)
 	}
 
-	// 初始化 MultiCache
-	mc, err := multi_cache.NewMultiCache(ctx, cfg, redisClient)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize MultiCache: %w", err)
+		return nil, fmt.Errorf("failed to initialize cache: %w", err)
 	}
 
 	return &Ember{
-		multiCache: mc,
-		logger:     cfg.Logger,
+		cache:  cache,
+		logger: cfg.Logger,
+		config: cfg,
 	}, nil
 }
 
-// Set 設置快取項目
+// Set sets a cache item.
 func (e *Ember) Set(ctx context.Context, key string, value any, ttl ...time.Duration) error {
-	return e.multiCache.Set(ctx, key, value, ttl...)
+	return e.cache.Set(ctx, key, value, ttl...)
 }
 
-// Get 獲取快取項目
+// Get retrieves a cache item.
 func (e *Ember) Get(ctx context.Context, key string, value any) (bool, error) {
-	return e.multiCache.Get(ctx, key, value)
+	return e.cache.Get(ctx, key, value)
 }
 
-// Delete 刪除快取項目
+// Delete removes a cache item.
 func (e *Ember) Delete(ctx context.Context, key string) error {
-	return e.multiCache.Delete(ctx, key)
+	return e.cache.Delete(ctx, key)
 }
 
-// Clear 清空所有快取
+// Clear removes all cache items.
 func (e *Ember) Clear(ctx context.Context) error {
-	return e.multiCache.Clear(ctx)
+	return e.cache.Clear(ctx)
 }
 
-// GetMulti 獲取多個快取項目
+// GetMulti retrieves multiple cache items.
 func (e *Ember) GetMulti(ctx context.Context, keys []string) (map[string]any, error) {
-	return e.multiCache.GetMulti(ctx, keys)
+	return e.cache.GetMulti(ctx, keys)
 }
 
-// SetMulti 設置多個快取項目
+// SetMulti sets multiple cache items.
 func (e *Ember) SetMulti(ctx context.Context, items map[string]any, ttl ...time.Duration) error {
-	return e.multiCache.SetMulti(ctx, items, ttl...)
+	return e.cache.SetMulti(ctx, items, ttl...)
 }
 
-// Close 關閉 Ember 庫，釋放資源
+// GetStats returns cache usage statistics if available.
+func (e *Ember) GetStats() map[string]interface{} {
+	if stats, ok := e.cache.(interface{ Stats() map[string]interface{} }); ok {
+		return stats.Stats()
+	}
+	return nil
+}
+
+// Close closes the Ember library and releases resources.
 func (e *Ember) Close() error {
-	return e.multiCache.Close()
+	return e.cache.Close()
+}
+
+// Configuration options
+
+// WithLogger sets a custom logger.
+func WithLogger(logger *zap.Logger) Option {
+	return func(cfg *config.Config) error {
+		cfg.Logger = logger
+		return nil
+	}
+}
+
+// WithMaxLocalSize sets the maximum size for the local cache.
+func WithMaxLocalSize(maxSize uint64) Option {
+	return func(cfg *config.Config) error {
+		cfg.MaxLocalSize = maxSize
+		return nil
+	}
+}
+
+// WithShardCount sets the number of shards for the local cache.
+func WithShardCount(shardCount uint64) Option {
+	return func(cfg *config.Config) error {
+		cfg.ShardCount = shardCount
+		return nil
+	}
+}
+
+// WithDefaultExpiration sets the default expiration time for cache items.
+func WithDefaultExpiration(ttl time.Duration) Option {
+	return func(cfg *config.Config) error {
+		cfg.DefaultExpiration = ttl
+		return nil
+	}
+}
+
+// WithRedis sets Redis options for distributed caching.
+func WithRedis(options *redis.Options) Option {
+	return func(cfg *config.Config) error {
+		cfg.RedisOptions = options
+		return nil
+	}
+}
+
+// WithSerializer sets custom serialization functions.
+func WithSerializer(encodeType string) Option {
+	return func(cfg *config.Config) error {
+		if encodeType == serialization.GobType {
+			cfg.Serialization.Encoder = serialization.GobEncoder
+			cfg.Serialization.Decoder = serialization.GobDecoder
+		} else {
+			cfg.Serialization.Encoder = serialization.JSONEncoder
+			cfg.Serialization.Decoder = serialization.JSONDecoder
+		}
+
+		return nil
+	}
+}
+
+// WithBloomFilter configures the Bloom filter settings.
+func WithBloomFilter(expectedItems uint, falsePositiveRate float64) Option {
+	return func(cfg *config.Config) error {
+		cfg.CacheBehaviorConfig.BloomFilterSettings.ExpectedItems = expectedItems
+		cfg.CacheBehaviorConfig.BloomFilterSettings.FalsePositiveRate = falsePositiveRate
+		return nil
+	}
+}
+
+// WithPrefetch configures the prefetch behavior.
+func WithPrefetch(enable bool, threshold, count uint64) Option {
+	return func(cfg *config.Config) error {
+		cfg.CacheBehaviorConfig.EnablePrefetch = enable
+		cfg.CacheBehaviorConfig.PrefetchThreshold = threshold
+		cfg.CacheBehaviorConfig.PrefetchCount = count
+		return nil
+	}
+}
+
+// WithAdaptiveTTL configures adaptive TTL settings.
+func WithAdaptiveTTL(enable bool, minTTL, maxTTL, adjustInterval time.Duration) Option {
+	return func(cfg *config.Config) error {
+		cfg.CacheBehaviorConfig.EnableAdaptiveTTL = enable
+		cfg.CacheBehaviorConfig.AdaptiveTTLSettings.MinTTL = minTTL
+		cfg.CacheBehaviorConfig.AdaptiveTTLSettings.MaxTTL = maxTTL
+		cfg.CacheBehaviorConfig.AdaptiveTTLSettings.TTLAdjustInterval = adjustInterval
+		return nil
+	}
+}
+
+// WithCircuitBreaker configures circuit breaker settings.
+func WithCircuitBreaker(maxRequests uint32, interval, timeout time.Duration) Option {
+	return func(cfg *config.Config) error {
+		cfg.ResilienceConfig.GlobalCircuitBreaker.MaxRequests = maxRequests
+		cfg.ResilienceConfig.GlobalCircuitBreaker.Interval = interval
+		cfg.ResilienceConfig.GlobalCircuitBreaker.Timeout = timeout
+		return nil
+	}
 }

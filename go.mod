@@ -4,7 +4,7 @@ go 1.23.0
 
 require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.0
-	github.com/dgraph-io/ristretto v0.1.1
+	github.com/dgraph-io/ristretto v1.0.0
 	github.com/redis/go-redis/v9 v9.6.1
 	github.com/sony/gobreaker v1.0.0
 	go.opentelemetry.io/otel v1.30.0
@@ -21,7 +21,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/golang/glog v1.2.2 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	go.opentelemetry.io/otel/metric v1.30.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

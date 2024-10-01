@@ -21,7 +21,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
-	defer logger.Sync()
+	defer func(logger *zap.Logger) {
+		if err = logger.Sync(); err != nil {
+			log.Fatalf("Failed to sync logger: %v", err)
+		}
+	}(logger)
 
 	// 配置 Redis 選項
 	redisOptions := &redis.Options{
@@ -33,12 +37,12 @@ func main() {
 	// 初始化 Ember 庫
 	emberCache, err := ember.New(
 		ctx,
-		redisOptions,
 		ember.WithLogger(logger),
 		ember.WithMaxLocalSize(2*1024*1024*1024), // 2GB
 		ember.WithShardCount(16),
 		ember.WithDefaultExpiration(10*time.Minute),
-		ember.WithSerialization("json"),
+		ember.WithSerializer("json"),
+		ember.WithRedis(redisOptions),
 	)
 	if err != nil {
 		log.Fatalf("Failed to initialize Ember: %v", err)
