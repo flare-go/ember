@@ -284,7 +284,7 @@ ember.New(ctx, ember.WithSerializer(&CustomSerializer{}))
 3. **擴展監控指標**
     - 可以通過修改 `Stats()` 方法來暴露更多自定義指標。
 
-## 未來 Roadmap
+## Roadmap
 
 - 支持更多的分佈式緩存後端（如 Memcached）
 - 實現緩存數據壓縮功能
