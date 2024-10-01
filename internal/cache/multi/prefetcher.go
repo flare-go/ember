@@ -57,7 +57,7 @@ func (p *Prefetcher) prefetchPopularKeys(ctx context.Context) {
 		wg.Add(1)
 		go func(k string) {
 			defer wg.Done()
-			var value interface{}
+			var value any
 			if _, err := p.cache.Get(ctx, k, &value); err != nil {
 				p.logger.Warn("Failed to prefetch key", zap.String("key", k), zap.Error(err))
 			}
@@ -68,7 +68,7 @@ func (p *Prefetcher) prefetchPopularKeys(ctx context.Context) {
 
 func (p *Prefetcher) getPopularKeys(threshold, limit uint64) []string {
 	var popularKeys []string
-	p.cache.accessCount.Range(func(key, value interface{}) bool {
+	p.cache.accessCount.Range(func(key, value any) bool {
 		count := value.(*atomic.Int64)
 		countValue := count.Load()
 		if countValue >= 0 {
@@ -89,7 +89,7 @@ func (p *Prefetcher) Warmup(ctx context.Context) {
 		wg.Add(1)
 		go func(k string) {
 			defer wg.Done()
-			var value interface{}
+			var value any
 			if _, err := p.cache.Get(ctx, k, &value); err != nil {
 				p.logger.Warn("Failed to warm up key", zap.String("key", k), zap.Error(err))
 			}

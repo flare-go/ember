@@ -111,8 +111,8 @@ func (e *Ember) SetMulti(ctx context.Context, items map[string]any, ttl ...time.
 }
 
 // GetStats returns cache usage statistics if available.
-func (e *Ember) GetStats() map[string]interface{} {
-	if stats, ok := e.cache.(interface{ Stats() map[string]interface{} }); ok {
+func (e *Ember) GetStats() map[string]any {
+	if stats, ok := e.cache.(interface{ Stats() map[string]any }); ok {
 		return stats.Stats()
 	}
 	return nil

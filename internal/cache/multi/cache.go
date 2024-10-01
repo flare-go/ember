@@ -242,7 +242,7 @@ func (c *Cache) getFromLocalCache(ctx context.Context, key string, value any) (b
 }
 
 func (c *Cache) getFromRemoteCache(ctx context.Context, key string, value any) (bool, error) {
-	v, err, _ := c.sf.Do(key, func() (interface{}, error) {
+	v, err, _ := c.sf.Do(key, func() (any, error) {
 		var entry models.Entry
 		err := c.resilience.Get(ctx, key, &entry)
 		if err != nil {
