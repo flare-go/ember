@@ -39,6 +39,8 @@ func NewRistrettoStore(maxSize uint64, defaultTTL time.Duration, logger *zap.Log
 	c, err := ristretto.NewCache(&ristretto.Config[string, any]{
 		NumCounters: numCounters,
 		MaxCost:     maxCost,
+		BufferItems: 64,
+		Metrics:     true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Ristretto cache: %w", err)

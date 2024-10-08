@@ -2,14 +2,15 @@ package config
 
 import (
 	"errors"
-	"github.com/redis/go-redis/v9"
 	"io"
 	"math"
 	"runtime"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/sony/gobreaker"
 	"go.uber.org/zap"
+
 	"goflare.io/ember/pkg/serialization"
 )
 
